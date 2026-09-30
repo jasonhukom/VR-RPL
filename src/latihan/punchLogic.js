@@ -10,12 +10,97 @@ const HIT_RADIUS = 0.50 * 0.48 + 0.12;
 export function detectPunch(controller, hand, delta, game) {
     // TODO (versi siswa): deteksi pukulan dari kecepatan tangan controller.
     // Petunjuk: bandingkan posisi saat ini dengan sampel sebelumnya, lalu panggil checkHit.
+    if (game.state !== 'PLAYING') return false;
+
+    const previousPosition = hand === 'left'
+        ? game.controllers.previousLeftPosition
+        : game.controllers.previousRightPosition;
+    const samples = hand === 'left' ? game.leftMotionSamples : game.rightMotionSamples;
+    const motion = sampleHandMotion(controller, previousPosition, samples, delta);
+    const speed = Math.max(motion.instantSpeed, motion.windowSpeed);
+    const armedKey = hand === 'left' ? 'leftHitArmed' : 'rightHitArmed';
+
+        // Serangan (hit) hanya dapat mencetak skor satu kali jika tangan pemukul sudah menjauh dari target.
+    if (game[armedKey] === false) {
+        if (motion.to.distanceTo(game.target.position) > 0.55 && speed < HAND_IGNORE_SPEED) {
+            game[armedKey] = true;
+        } else {
+            return false;
+        }
+    }
+
+    if (hand === 'left') game.leftHandSpeed = motion.windowSpeed;
+    else game.rightHandSpeed = motion.windowSpeed;
+
+    const cooldownKey = hand === 'left' ? 'leftPunchCooldown' : 'rightPunchCooldown';
+    if (game[cooldownKey] > 0) {
+        game[cooldownKey] = Math.max(0, game[cooldownKey] - delta);
+        return false;
+    }
+    if (speed < HAND_IGNORE_SPEED) return false;
+
+    const settings = getDifficultySettings(game);
+    if (speed < settings.minPunchSpeed) {
+        game.status = `TOO SLOW  ${speed.toFixed(1)} m/s`;
+        game.feedbackTimer = 0.9;
+        game[cooldownKey] = PUNCH_COOLDOWN;
+        return false;
+    }
+
+    const hit = checkHit(controller, game, motion, speed, hand);
+    if (hit) game[cooldownKey] = PUNCH_COOLDOWN;
+    return hit;
 }
 
 
 export function checkHit(controller, game, motion = game.latestMotion, speed = game.latestPunchSpeed, hand = game.latestPunchHand) {
     // TODO (versi siswa): bandingkan lintasan controller dengan target/hitbox.
     // Petunjuk: ukur jarak titik ke segmen, lalu perbarui hit/miss, score, combo, dan audio.
+    // Satu pukulan selalu memberi satu poin; combo hanya penghitung pukulan beruntun.
+    const points = 1;
+    game.addScore(points);
+    game.misses += 1;
+    game.updateCombo(false);
+
+    if (isHit) {
+        const armedKey = hand === 'left' ? 'leftHitArmed' : 'rightHitArmed';
+        if (game[armedKey] === false) return false;
+        game[armedKey] = false;
+
+
+        const now = performance.now();
+        if (now - (game.lastScoredAt ?? -Infinity) < SCORE_INTERVAL_MS) {
+            game[hand === 'left' ? 'leftPunchCooldown' : 'rightPunchCooldown'] = PUNCH_COOLDOWN;
+            return false;
+        }
+        game.lastScoredAt = now;
+        const settings = getDifficultySettings(game);
+        const isPerfect = speed >= settings.perfectSpeed && closestDistance <= 0.13;
+        game.hits += 1;
+        if (isPerfect) game.perfects += 1;
+        game.updateCombo(true);
+        // Satu pukulan selalu memberi satu poin; combo hanya penghitung pukulan beruntun.
+        const points = 1;
+        game.addScore(points);
+        game.target.material.color.setHex(isPerfect ? 0x66ff66 : 0xffff00);
+        game.target.scale.setScalar(1.08);
+        const fist = hand === 'left' ? game.controllers.leftFist : game.controllers.rightFist;
+        fist.scale.setScalar(1.30);
+        game.audio.play(isPerfect ? 'perfect' : 'hit', isPerfect ? 0.80 : 0.65);
+        game.status = isPerfect ? `PERFECT +${points}` : `HIT +${points}`;
+        game.feedbackTimer = 0.9;
+        return true;
+    }
+    
+    if (!isTargetedSwing(motion, game)) return false;
+    game.misses += 1;
+    game.updateCombo(false);
+    game[hand === 'left' ? 'leftPunchCooldown' : 'rightPunchCooldown'] = PUNCH_COOLDOWN;
+    game.audio.play('miss', 0.45);
+    game.status = `MISS  ${speed.toFixed(1)} m/s`;
+    game.feedbackTimer = 0.9;
+    return false;
+
 }
 
 function sampleHandMotion(controller, previousPosition, samples, delta) {
